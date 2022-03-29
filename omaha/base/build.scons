@@ -1,0 +1,283 @@
+# Copyright 2009 Google Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ========================================================================
+
+Import('env')
+
+import fnmatch
+import glob
+import operator
+import os
+import os.path
+
+env.BuildSConscript('logging')
+env.BuildSConscript('security')
+
+local_env = env.Clone()
+
+inputs = [
+    'apply_tag.cc',
+    'app_util.cc',
+    'browser_utils.cc',
+    'cgi.cc',
+    'clipboard.cc',
+    'command_line_parser.cc',
+    'command_line_validator.cc',
+    'commands.cc',
+    'crash_if_specific_error.cc',
+    'debug.cc',
+    'disk.cc',
+    'dynamic_link_kernel32.cc',
+    'encrypt.cc',
+    'environment_block_modifier.cc',
+    'environment_utils.cc',
+    'error.cc',
+    'event_trace_controller.cc',
+    'event_trace_provider.cc',
+    'etw_log_writer.cc',
+    'extractor.cc',
+    'file.cc',
+    'file_reader.cc',
+    'file_ver.cc',
+    'firewall_product_detection.cc',
+    'highres_timer-win32.cc',
+    'logging.cc',
+    'omaha_version.cc',
+    'path.cc',
+    'process.cc',
+    'proc_utils.cc',
+    'program_instance.cc',
+    'queue_timer.cc',
+    'reactor.cc',
+    'reg_key.cc',
+    'registry_monitor_manager.cc',
+    'safe_format.cc',
+    'service_utils.cc',
+    'shell.cc',
+    'shutdown_handler.cc',
+    'signatures.cc',
+    'signaturevalidator.cc',
+    'string.cc',
+    'synchronized.cc',
+    'system.cc',
+    'system_info.cc',
+    'thread.cc',
+    'thread_pool.cc',
+    'time.cc',
+    'timer.cc',
+    'user_info.cc',
+    'user_rights.cc',
+    'utils.cc',
+    'vista_utils.cc',
+    'vistautil.cc',
+    'window_utils.cc',
+    'wmi_query.cc',
+    'xml_utils.cc',
+
+    '../third_party/chrome/files/src/base/cpu.cc',
+    '../third_party/chrome/files/src/base/rand_util.cc',
+    '../third_party/chrome/files/src/crypto/rsa_private_key.cc',
+    '../third_party/chrome/files/src/crypto/rsa_private_key_win.cc',
+    '../third_party/chrome/files/src/crypto/signature_creator_win.cc',
+    ]
+
+# Required by the exception barrier code.
+local_env.Append(ASFLAGS = ['/safeseh'])
+
+# Build these into a library.
+local_env.ComponentStaticLibraryMultiarch('base', inputs)
+
+def MultiGlobFilter(env, include, exclude=None):
+  """Glob for each pattern in `includes`, filter out patterns in `excludes`."""
+  files = set()
+  for pat in include:
+    files.update(env.Glob(pat, strings=True))
+  for exclude_pat in (exclude or []):
+    files.difference_update(fnmatch.filter(files, exclude_pat))
+  return sorted(files)
+
+""" Build libprotobuf. """
+
+proto_env = env.Clone()
+
+default_protobuf_src_dir = '$GOOGLE3/third_party/protobuf/src'
+protobuf_src_dir = os.getenv('OMAHA_PROTOBUF_SRC_DIR', default_protobuf_src_dir)
+protobuf_src_path = os.path.join(protobuf_src_dir, 'google/protobuf/')
+protobuf_src_path_dir = proto_env.Dir(protobuf_src_path)
+proto_env.Dir('protobuf').addRepository(protobuf_src_path_dir)
+
+proto_env.FilterOut(CCFLAGS=['/W4', '/Wall'])
+
+proto_env.Prepend(CCFLAGS=['/W2'])
+
+proto_env.Append(
+    CCFLAGS=[
+        '/wd4309',  # truncation of constant value
+        '/wd4244',  # conversion from 'T1' to 'T2', possible loss of data
+        '/wd4506',  # no definition for inline function
+    ],
+    CPPDEFINES=[
+        'LIBPROTOBUF_EXPORTS',
+        # Force the compiler to output public accessors for Google-specific
+        # ctypes.
+        'PUBLIC_UNKNOWN_CTYPES',
+        # Let the compiler silently ignore unknown options in the proto files.
+        'ALLOW_UNKNOWN_OPTIONS',
+        'PROTOBUF_INTERNAL_IGNORE_FIELD_NAME_ERRORS_=1',
+    ],
+    CPPPATH=[
+        protobuf_src_dir,
+        protobuf_src_path,
+    ],
+)
+
+cc_files = MultiGlobFilter(
+    proto_env,
+    [
+        'protobuf/*.cc',
+        'protobuf/io/*.cc',
+        'protobuf/stubs/*.cc',
+    ],
+    exclude=['protobuf/*test*.cc'],
+)
+
+proto_env.ComponentStaticLibraryMultiarch(
+    'libprotobuf', cc_files, COMPONENT_STATIC=True)
+
+if 'OMAHA_PROTOBUF_BIN_DIR' not in os.environ:
+  """ Build the Protocol Buffer Compiler executable protoc.exe."""
+
+  protoc_env = proto_env.Clone()
+
+  protoc_env.FilterOut(LINKFLAGS=['/SUBSYSTEM:WINDOWS,5.01'])
+
+  protoc_env.Append(
+      LIBS=[
+          protoc_env['crt_libs'][protoc_env.Bit('debug')],
+          'libprotobuf',
+      ],
+      LINKFLAGS=['/SUBSYSTEM:CONSOLE,5.01'],
+  )
+
+  cc_files = MultiGlobFilter(
+      protoc_env,
+      [
+          'protobuf/compiler/*.cc',
+          'protobuf/compiler/*/*.cc',
+      ],
+      exclude = [
+          'protobuf/compiler/mock_code_generator.cc',
+          'protobuf/compiler/*test*.cc',
+          'protobuf/compiler/*/*test*.cc',
+      ],
+  )
+  protoc_env.ComponentProgram('Default/protoc.exe', cc_files)
+
+""" Build the CRX Verifier libraries."""
+
+Import('env')
+local_env = env.Clone()
+
+crx_file_path = '/third_party/chrome/files/src/components/crx_file/'
+local_env.Append(PROTO_PATH = '$MAIN_DIR' + crx_file_path)
+local_env.Append(CPP_OUT = '$TARGET_ROOT/proto_files' + crx_file_path)
+proto_sources = [
+    '$MAIN_DIR' + crx_file_path + 'crx3.proto'
+]
+cc_files = local_env.CompileProtoBuf(proto_sources)
+local_env.Append(
+    CPPPATH=[
+        protobuf_src_dir,
+        '$TARGET_ROOT/proto_files/',
+    ],
+)
+
+cc_files += [
+    '../third_party/chrome/files/src/components/crx_file/crx_verifier.cc',
+    '../third_party/chrome/files/src/components/crx_file/id_util.cc',
+    '../third_party/chrome/files/src/crypto/signature_verifier.cc',
+    '../third_party/chrome/files/src/crypto/signature_verifier_win.cc',
+    '../third_party/chrome/files/src/crypto/secure_util.cc',
+]
+
+""" Add zlib library files."""
+zlib_src_path = '$GOOGLE3/third_party/zlib/'
+zlib_src_path_dir = local_env.Dir(zlib_src_path)
+local_env.Dir('zlib').addRepository(zlib_src_path_dir)
+cc_files += ['zlib/' +
+             os.path.basename(x) for x in
+             glob.glob(zlib_src_path_dir.path + os.sep + '*.c')]
+
+""" Add libzip library files."""
+libzip_src_path = '$GOOGLE3/third_party/libzip/lib/'
+libzip_src_path_dir = local_env.Dir(libzip_src_path)
+local_env.Dir('libzip').addRepository(libzip_src_path_dir)
+libzip_gladman_src_path = '$GOOGLE3/third_party/libzip/lib/gladman-fcrypt'
+
+local_env.Append(
+    CPPDEFINES=[
+        'HAVE_CONFIG_H',
+    ],
+    CPPPATH=[
+        'libzip/',
+        libzip_gladman_src_path,
+        libzip_src_path,
+        libzip_src_path + '..',
+        zlib_src_path,
+    ],
+    CCFLAGS=[
+        '/wd4005',
+        '/wd4100',
+        '/wd4013',
+        '/wd4047',
+        '/wd4131',
+        '/wd4132',
+        '/wd4232',
+        '/wd4242',
+        '/wd4244',
+        '/wd4245',
+        '/wd4255',
+        '/wd4267',
+        '/wd4310',
+        '/wd4312',
+        '/wd4388',
+        '/wd4389',
+        '/wd4647',
+        '/wd4548',
+    ],
+)
+
+cc_files_exclusions = [
+    '*unix*.c',
+    'zip_algorithm_xz.c',
+    'zip_crypto_win.c',
+    'zip_crypto_[cgmo]*.c',
+    'zip_mkstempm.c',
+    'zip_source_file.c',
+    'zip_source_file_stdio.c',
+    'zip_source_file_stdio_named.c',
+    'zip_random_uwp.c',
+    'zip_winzip_aes.c',
+    '*bzip2.c',
+    'zip_source_winzip_aes_*.c'
+]
+
+cc_files += ['libzip/zip_err_str.c']
+cc_files += ['libzip/' + os.path.basename(x) for x in list(
+    set(glob.glob(os.sep.join([libzip_src_path_dir.path, '*.c']))) -
+    set(reduce(operator.concat, map (lambda x : glob.glob(
+      os.sep.join([libzip_src_path_dir.path, x])), cc_files_exclusions))))]
+
+local_env.ComponentStaticLibraryMultiarch(
+    'crx_file', cc_files, COMPONENT_STATIC=True)
