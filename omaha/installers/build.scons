@@ -1,0 +1,120 @@
+#!/usr/bin/python2.4
+#
+# Copyright 2009 Google Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ========================================================================
+
+
+Import('env')
+
+import codecs
+import os
+import re
+import string
+
+from installers import build_metainstaller
+
+_RECOVERY_MARKUP_DLL_BASE_NAME = 'recovery_markup'
+_RECOVERY_MARKUP_DLL = _RECOVERY_MARKUP_DLL_BASE_NAME + '.dll'
+
+def _BuildSetup(omaha_versions_info, is_repair = False):
+  # Build the meta-installer for each version.
+  _PRODUCT_NAME = 'GoogleUpdate'
+
+  for omaha_version_info in omaha_versions_info:
+    prefix = omaha_version_info.filename_prefix
+
+    source_binary = '$OBJ_ROOT/mi_exe_stub/%smi_exe_stub.exe' % prefix
+
+    if is_repair:
+      _BuildSetupRepairVersion(omaha_version_info,
+                               source_binary,
+                               _PRODUCT_NAME,
+                               prefix)
+    else:
+      _BuildSetupVersion(omaha_version_info,
+                         source_binary,
+                         _PRODUCT_NAME,
+                         prefix)
+
+
+
+def _BuildSetupRepairVersion(omaha_version_info,
+                             source_binary,
+                             product_name,
+                             prefix = ''):
+  # Build the target setup executable by merging the empty metafile
+  # with the resource dll built earlier
+  merged_output = env.Command(
+      target='%smi_exe_stub_repair.exe' % (prefix),
+      source=[source_binary, '$OBJ_ROOT/installers/' + _RECOVERY_MARKUP_DLL],
+      action='@"$MAIN_DIR/tools/resmerge" --copyappend $SOURCES $TARGET',
+  )
+
+  build_metainstaller.BuildMetaInstaller(
+      env=env,
+      target_name='%s%sSetup_repair.exe' % (prefix, product_name),
+      omaha_version_info=omaha_version_info,
+      empty_metainstaller_path=merged_output,
+      omaha_files_path='$STAGING_DIR',
+      prefix = prefix,
+      suffix = '_repair',
+  )
+
+
+
+def _BuildSetupVersion(omaha_version_info,
+                       source_binary,
+                       product_name,
+                       prefix = ''):
+  target_name = '%s%sSetup.exe' % (prefix, product_name)
+
+  build_metainstaller.BuildMetaInstaller(
+      env=env,
+      omaha_version_info=omaha_version_info,
+      target_name=target_name,
+      empty_metainstaller_path=source_binary,
+      omaha_files_path='$STAGING_DIR',
+      prefix=prefix,
+  )
+
+if not env.Bit('official_installers'):
+  omaha_versions_info = env['omaha_versions_info']
+
+  # Build the normal tagged installers.
+  _BuildSetup(omaha_versions_info)
+
+  env.Replicate(
+      target=[
+          '$STAGING_DIR',
+          ],
+      source='$OBJ_ROOT/installers/GoogleUpdateSetup.exe',
+  )
+
+  # Build the repair installer.
+  _BuildSetup(omaha_versions_info, is_repair = True)
+
+  # Build a resource DLL containing the recovery markup resource.
+  dll_env = env.Clone(COMPONENT_STATIC=False)
+  dll_env['LINKFLAGS'] += ['/noentry']
+
+  dll_inputs = [
+      '../installers/resource_only_dll.def',
+      dll_env.RES('recovery_markup.res',
+                  '$MAIN_DIR/recovery/recovery_markup.rc')
+      ]
+
+  dll_env.ComponentLibrary(_RECOVERY_MARKUP_DLL_BASE_NAME, dll_inputs)
+
+
